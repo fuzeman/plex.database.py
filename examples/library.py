@@ -1,10 +1,12 @@
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 from plex import Plex
 from plex_database.library import Library
 from plex_database.matcher import Matcher
 from plex_database.models import LibrarySection, LibrarySectionType, MetadataItem
 
 from stash import Stash
-import logging
 import os
 import sys
 import time
@@ -111,8 +113,6 @@ def test(func, repeat=10, *args, **kwargs):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-
     repeat = int(raw_input('Repeat [10]: ') or 10)
 
     raw_input('[start (repeat: %r)]' % repeat)
