@@ -1,7 +1,7 @@
 from plex import Plex
 from plex_database.library import Library
 from plex_database.matcher import Matcher
-from plex_database.models import LibrarySection, LibrarySectionType
+from plex_database.models import LibrarySection, LibrarySectionType, MetadataItem
 
 from stash import Stash
 import logging
@@ -21,16 +21,25 @@ def fetch_movies(library):
     sections = library.sections(LibrarySectionType.Movie, LibrarySection.id).tuples()
 
     # Fetch movies with account settings
-    elapsed, items = measure(library.movies.mapped, sections, account=1, parse_guid=True)
+    elapsed, items = measure(
+        library.movies.mapped, sections,
+        fields=[
+            MetadataItem.title,
+            MetadataItem.year
+        ],
+        account=1,
+        parse_guid=True
+    )
+
     print 'Library.movies.mapped() - elapsed: %2dms' % (elapsed * 1000)
 
-    for _, guid, settings in items:
+    for _, guid, item in items:
         key = (guid.agent, guid.sid)
 
         if key not in movies:
             movies[key] = []
 
-        movies[key].append(settings)
+        movies[key].append(item)
 
     print 'len(movies): %r' % len(movies)
     return movies
