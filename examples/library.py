@@ -4,7 +4,7 @@ logging.basicConfig(level=logging.DEBUG)
 from plex import Plex
 from plex_database.library import Library
 from plex_database.matcher import Matcher
-from plex_database.models import LibrarySection, LibrarySectionType, MetadataItem
+from plex_database.models import LibrarySection, LibrarySectionType, MediaItem, MetadataItem
 
 from stash import Stash
 import os
@@ -26,8 +26,14 @@ def fetch_movies(library):
     elapsed, items = measure(
         library.movies.mapped, sections,
         fields=[
+            MetadataItem.added_at,
             MetadataItem.title,
-            MetadataItem.year
+            MetadataItem.year,
+
+            MediaItem.audio_channels,
+            MediaItem.audio_codec,
+            MediaItem.height,
+            MediaItem.interlaced
         ],
         account=1,
         parse_guid=True
@@ -54,14 +60,26 @@ def fetch_shows(library):
     sections = library.sections(LibrarySectionType.Show, LibrarySection.id).tuples()
 
     # Fetch episodes (with show/season parents)
-    elapsed, (show_items, season_items, episode_items) = measure(library.episodes.mapped, sections, account=1, parse_guid=True)
+    elapsed, (show_items, season_items, episode_items) = measure(
+        library.episodes.mapped, sections,
+        fields=([
+            MetadataItem.title,
+            MetadataItem.year
+        ], [], [
+            MetadataItem.added_at,
+
+            MediaItem.audio_channels,
+            MediaItem.audio_codec,
+            MediaItem.height,
+            MediaItem.interlaced
+        ]),
+        account=1,
+        parse_guid=True
+    )
     print 'Library.episodes.with_parents() - elapsed: %2dms' % (elapsed * 1000)
 
     # Iterate over items, merge them into `shows and `seasons` dictionaries
-    for ids, guid, (season_num, episode_num), settings in episode_items:
-        if ids['#'] % 100 == 0:
-            sys.stdout.write('.')
-
+    for ids, guid, (season_num, episode_num), show, season, episode in episode_items:
         show_key = (guid.agent, guid.sid)
 
         # Ensure show exists
@@ -75,7 +93,7 @@ def fetch_shows(library):
             shows[show_key][episode_key] = []
 
         # Append episode `settings` into dictionary
-        shows[show_key][episode_key].append(settings)
+        shows[show_key][episode_key].append(episode)
 
     print 'len(shows): %r' % len(shows)
     return shows
