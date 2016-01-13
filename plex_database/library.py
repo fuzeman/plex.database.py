@@ -5,6 +5,7 @@ from plex_metadata.guid import Guid
 from peewee import JOIN_LEFT_OUTER, DateTimeField, FieldProxy
 from stash.algorithms.core.prime_context import PrimeContext
 import logging
+import peewee
 
 log = logging.getLogger(__name__)
 
@@ -436,6 +437,21 @@ class EpisodeLibrary(LibraryBase):
 
         # Return number of items
         return query.count()
+
+    def count_items(self, sections):
+        # Map `Section` list to ids
+        section_ids = [id for (id, ) in sections]
+
+        # Build query
+        query = MetadataItem.select(
+            peewee.fn.sum(MetadataItem.media_item_count)
+        ).where(
+            MetadataItem.library_section << section_ids,
+            MetadataItem.metadata_type == MetadataItemType.Episode
+        )
+
+        # Return number of items
+        return query.scalar()
 
     def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
