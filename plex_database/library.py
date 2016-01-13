@@ -144,8 +144,12 @@ class LibraryBase(object):
             field = fields[x]
             value = row[x]
 
-            # Parse field
-            value = cls._parse_field(field, value)
+            try:
+                # Parse field
+                value = cls._parse_field(field, value)
+            except Exception, ex:
+                log.error('Unable to parse value %r as field %r', value, field)
+                raise ex
 
             # Update `item` with field
             if field.model_class in [MetadataItem, Episode]:
@@ -184,6 +188,42 @@ class LibraryBase(object):
 
 class MovieLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Set default `select()` fields
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.guid
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections, account=None):
+        # Build query
+        query = self.query(
+            sections, [
+                MetadataItem.id
+            ],
+            account=account
+        )
+
+        # Return number of items
+        return query.count()
+
+    def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -195,11 +235,6 @@ class MovieLibrary(LibraryBase):
         if fields is None:
             fields = []
 
-        fields = [
-            MetadataItem.id,
-            MetadataItem.guid
-        ] + fields
-
         # Build `where()` query
         if where is None:
             where = []
@@ -210,19 +245,13 @@ class MovieLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
+        return self._join(
             MetadataItem.select(*fields),
             self._models(fields, account),
             account
         ).where(
             *where
         )
-
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
 
     def mapped(self, sections, fields=None, account=None, parse_guid=False):
         # Retrieve `id` from `Account`
@@ -267,6 +296,42 @@ class MovieLibrary(LibraryBase):
 
 class ShowLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Set default `select()` fields
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.guid
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections, account=None):
+        # Build query
+        query = self.query(
+            sections, [
+                MetadataItem.id
+            ],
+            account=account
+        )
+
+        # Return number of items
+        return query.count()
+
+    def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -278,11 +343,6 @@ class ShowLibrary(LibraryBase):
         if fields is None:
             fields = []
 
-        fields = [
-            MetadataItem.id,
-            MetadataItem.guid
-        ] + fields
-
         # Build `where()` query
         if where is None:
             where = []
@@ -293,19 +353,13 @@ class ShowLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
+        return self._join(
             MetadataItem.select(*fields),
             self._models(fields, account),
             account
         ).where(
             *where
         )
-
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
 
 
 class SeasonLibrary(LibraryBase):
@@ -353,6 +407,37 @@ class SeasonLibrary(LibraryBase):
 
 class EpisodeLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Build `select()` query
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.index
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections):
+        # Build query
+        query = self.query(sections)
+
+        # Return number of items
+        return query.count()
+
+    def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -364,11 +449,6 @@ class EpisodeLibrary(LibraryBase):
         if fields is None:
             fields = []
 
-        fields = [
-            MetadataItem.id,
-            MetadataItem.index
-        ] + fields
-
         # Build `where()` query
         if where is None:
             where = []
@@ -379,19 +459,13 @@ class EpisodeLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
+        return self._join(
             MetadataItem.select(*fields),
             self._models(fields, account),
             account
         ).where(
             *where
         )
-
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
 
     def mapped(self, sections, fields=None, account=None, parse_guid=False):
         # Retrieve `id` from `Account`
