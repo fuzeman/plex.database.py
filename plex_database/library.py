@@ -5,6 +5,7 @@ from plex_metadata.guid import Guid
 from peewee import JOIN_LEFT_OUTER, DateTimeField, FieldProxy
 from stash.algorithms.core.prime_context import PrimeContext
 import logging
+import peewee
 
 log = logging.getLogger(__name__)
 
@@ -14,11 +15,11 @@ try:
     import pytz
 
     TZ_LOCAL = get_localzone()
-except ImportError:
+except Exception:
     pytz = None
     TZ_LOCAL = None
 
-    log.info('Unable to import "tzlocal" + "pytz": datetime objects will be returned without "tzinfo"')
+    log.warn('Unable to retrieve system timezone, datetime objects will be returned in local time', exc_info=True)
 
 MODEL_KEYS = {
     MediaItem:              'media',
@@ -72,7 +73,13 @@ class LibraryBase(object):
             try:
                 row = result.iterate()
             except UnicodeDecodeError, ex:
-                log.warn('Unable to retrieve row: %s', ex, exc_info=True)
+                log.warn('Unable to retrieve row: %s', ex, exc_info=True, extra={
+                    'event': {
+                        'module': __name__,
+                        'name': '_tuple_iterator.iterate.unicode_decode_error',
+                        'key': '%s:%s' % (ex.encoding, ex.reason)
+                    }
+                })
                 continue
 
             yield row
@@ -144,8 +151,12 @@ class LibraryBase(object):
             field = fields[x]
             value = row[x]
 
-            # Parse field
-            value = cls._parse_field(field, value)
+            try:
+                # Parse field
+                value = cls._parse_field(field, value)
+            except Exception, ex:
+                log.error('Unable to parse value %r as field %r', value, field)
+                raise ex
 
             # Update `item` with field
             if field.model_class in [MetadataItem, Episode]:
@@ -184,6 +195,72 @@ class LibraryBase(object):
 
 class MovieLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Set default `select()` fields
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.guid
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections, account=None):
+        # Build query
+        query = self.query(
+            sections, [
+                MetadataItem.id
+            ],
+            account=account
+        )
+
+        # Return number of items
+        return query.count()
+
+    def query(self, sections, fields=None, account=None, where=None):
+        # Retrieve `id` from `Account`
+        if account and type(account) is Account:
+            account = account.id
+
+        # Map `Section` list to ids
+        section_ids = [id for (id, ) in sections]
+
+        # Build `select()` query
+        if fields is None:
+            fields = []
+
+        # Build `where()` query
+        if where is None:
+            where = []
+
+        where += [
+            MetadataItem.library_section << section_ids,
+            MetadataItem.metadata_type == MetadataItemType.Movie
+        ]
+
+        # Build query
+        return self._join(
+            MetadataItem.select(*fields),
+            self._models(fields, account),
+            account
+        ).where(
+            *where
+        )
+
+    def mapped(self, sections, fields=None, account=None, where=None, parse_guid=False):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -197,7 +274,15 @@ class MovieLibrary(LibraryBase):
 
         fields = [
             MetadataItem.id,
-            MetadataItem.guid
+            MetadataItem.guid,
+
+            MediaPart.duration,
+            MediaPart.file,
+
+            MetadataItemSettings.rating,
+            MetadataItemSettings.view_count,
+            MetadataItemSettings.view_offset,
+            MetadataItemSettings.last_viewed_at
         ] + fields
 
         # Build `where()` query
@@ -210,52 +295,40 @@ class MovieLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
-            MetadataItem.select(*fields),
-            self._models(fields, account),
-            account
-        ).where(
-            *where
+        query = (MetadataItem.select(*fields)
+                             .join(MediaItem, on=(MediaItem.metadata_item == MetadataItem.id).alias('media'))
+                             .join(MediaPart, on=(MediaPart.media_item == MediaItem.id).alias('part'))
+                             .switch(MetadataItem)
         )
 
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
+        # Join settings
+        query = self._join_settings(query, account, MetadataItem)
 
-    def mapped(self, sections, fields=None, account=None, parse_guid=False):
-        # Retrieve `id` from `Account`
-        if account and type(account) is Account:
-            account = account.id
+        # Join extra models
+        models = self._models(fields, account)
 
-        # Build `fields` list
-        if fields is None:
-            fields = []
+        query = self._join(query, models, account, [
+            MetadataItemSettings,
+            MediaItem,
+            MediaPart
+        ])
 
-        if account:
-            fields += [
-                MetadataItemSettings.rating,
-                MetadataItemSettings.view_count,
-                MetadataItemSettings.view_offset,
-                MetadataItemSettings.last_viewed_at
-            ]
-
-        # Retrieve movies
-        movies = Library.movies(
-            sections, fields,
-            account=account
+        # Apply `WHERE` filter
+        query = query.where(
+            *where
         )
 
         # Iterate over items, parse guid (if enabled)
         guids = {}
 
         def movies_iterator():
-            for id, guid, movie in movies:
+            for row in self._tuple_iterator(query):
+                id, guid, movie = self._parse(fields, row, offset=2)
+
                 # Parse `guid` (if enabled, and not already parsed)
                 if parse_guid:
                     if id not in guids:
-                        guids[id] = Guid.parse(guid)
+                        guids[id] = Guid.parse(guid, strict=True)
 
                     guid = guids[id]
 
@@ -267,6 +340,42 @@ class MovieLibrary(LibraryBase):
 
 class ShowLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Set default `select()` fields
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.guid
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections, account=None):
+        # Build query
+        query = self.query(
+            sections, [
+                MetadataItem.id
+            ],
+            account=account
+        )
+
+        # Return number of items
+        return query.count()
+
+    def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -278,11 +387,6 @@ class ShowLibrary(LibraryBase):
         if fields is None:
             fields = []
 
-        fields = [
-            MetadataItem.id,
-            MetadataItem.guid
-        ] + fields
-
         # Build `where()` query
         if where is None:
             where = []
@@ -293,19 +397,13 @@ class ShowLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
+        return self._join(
             MetadataItem.select(*fields),
             self._models(fields, account),
             account
         ).where(
             *where
         )
-
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
 
 
 class SeasonLibrary(LibraryBase):
@@ -353,6 +451,52 @@ class SeasonLibrary(LibraryBase):
 
 class EpisodeLibrary(LibraryBase):
     def __call__(self, sections, fields=None, account=None, where=None):
+        # Build `select()` query
+        if fields is None:
+            fields = []
+
+        fields = [
+            MetadataItem.id,
+            MetadataItem.index
+        ] + fields
+
+        # Build query
+        query = self.query(
+            sections,
+            fields=fields,
+            account=account,
+            where=where
+        )
+
+        # Parse rows
+        return [
+            self._parse(fields, row, offset=2)
+            for row in self._tuple_iterator(query)
+        ]
+
+    def count(self, sections):
+        # Build query
+        query = self.query(sections)
+
+        # Return number of items
+        return query.count()
+
+    def count_items(self, sections):
+        # Map `Section` list to ids
+        section_ids = [id for (id, ) in sections]
+
+        # Build query
+        query = MetadataItem.select(
+            peewee.fn.sum(MetadataItem.media_item_count)
+        ).where(
+            MetadataItem.library_section << section_ids,
+            MetadataItem.metadata_type == MetadataItemType.Episode
+        )
+
+        # Return number of items
+        return query.scalar()
+
+    def query(self, sections, fields=None, account=None, where=None):
         # Retrieve `id` from `Account`
         if account and type(account) is Account:
             account = account.id
@@ -364,11 +508,6 @@ class EpisodeLibrary(LibraryBase):
         if fields is None:
             fields = []
 
-        fields = [
-            MetadataItem.id,
-            MetadataItem.index
-        ] + fields
-
         # Build `where()` query
         if where is None:
             where = []
@@ -379,19 +518,13 @@ class EpisodeLibrary(LibraryBase):
         ]
 
         # Build query
-        query = self._join(
+        return self._join(
             MetadataItem.select(*fields),
             self._models(fields, account),
             account
         ).where(
             *where
         )
-
-        # Parse rows
-        return [
-            self._parse(fields, row, offset=2)
-            for row in self._tuple_iterator(query)
-        ]
 
     def mapped(self, sections, fields=None, account=None, parse_guid=False):
         # Retrieve `id` from `Account`
@@ -423,7 +556,7 @@ class EpisodeLibrary(LibraryBase):
                 # Parse `guid` (if enabled, and not already parsed)
                 if parse_guid:
                     if id not in guids:
-                        guids[sh_id] = Guid.parse(guid)
+                        guids[sh_id] = Guid.parse(guid, strict=True)
 
                     guid = guids[sh_id]
 
@@ -448,7 +581,7 @@ class EpisodeLibrary(LibraryBase):
                 # Parse `guid` (if enabled, and not already parsed)
                 if parse_guid:
                     if id not in guids:
-                        guids[sh_id] = Guid.parse(guid)
+                        guids[sh_id] = Guid.parse(guid, strict=True)
 
                     guid = guids[sh_id]
 

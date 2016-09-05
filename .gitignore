@@ -1,3 +1,5 @@
+*.iml
 *.pyc
 
 /examples/**/*.db*
+/plex.database.py.egg-info
